@@ -573,7 +573,7 @@ func (d ServicesData) analyze(hs *httpdesign.ServiceExpr) *ServiceData {
 			}
 		}
 
-		payload := buildPayloadData(svc, hs, a, rd)
+		payload := buildPayloadData(a, rd)
 		var requestEncoder string
 		{
 			if payload.Request.ClientBody != nil || len(payload.Request.Headers) > 0 || len(payload.Request.QueryParams) > 0 {
@@ -630,8 +630,8 @@ func (d ServicesData) analyze(hs *httpdesign.ServiceExpr) *ServiceData {
 			ServiceVarName:  svc.VarName,
 			ServicePkgName:  svc.PkgName,
 			Payload:         payload,
-			Result:          buildResultData(svc, hs, a, rd),
-			Errors:          buildErrorsData(svc, hs, a, rd),
+			Result:          buildResultData(a, rd),
+			Errors:          buildErrorsData(a, rd),
 			Routes:          routes,
 			MountHandler:    fmt.Sprintf("Mount%sHandler", ep.VarName),
 			HandlerInit:     fmt.Sprintf("New%sHandler", ep.VarName),
@@ -706,9 +706,10 @@ func (d ServicesData) analyze(hs *httpdesign.ServiceExpr) *ServiceData {
 // buildPayloadData returns the data structure used to describe the endpoint
 // payload including the HTTP request details. It also returns the user types
 // used by the request body type recursively if any.
-func buildPayloadData(svc *service.Data, s *httpdesign.ServiceExpr, e *httpdesign.EndpointExpr, sd *ServiceData) *PayloadData {
+func buildPayloadData(e *httpdesign.EndpointExpr, sd *ServiceData) *PayloadData {
 	var (
 		payload = e.MethodExpr.Payload
+		svc     = sd.Service
 
 		body          design.DataType
 		request       *RequestData
@@ -720,8 +721,8 @@ func buildPayloadData(svc *service.Data, s *httpdesign.ServiceExpr, e *httpdesig
 		body = e.Body.Type
 
 		var (
-			serverBodyData = buildBodyType(svc, s, e, e.Body, payload, true, true, sd)
-			clientBodyData = buildBodyType(svc, s, e, e.Body, payload, true, false, sd)
+			serverBodyData = buildBodyType(sd, e, e.Body, payload, true, true)
+			clientBodyData = buildBodyType(sd, e, e.Body, payload, true, false)
 			paramsData     = extractPathParams(e.PathParams(), payload, svc.Scope)
 			queryData      = extractQueryParams(e.QueryParams(), payload, svc.Scope)
 			headersData    = extractHeaders(e.MappedHeaders(), payload, true, svc.Scope)
@@ -812,7 +813,7 @@ func buildPayloadData(svc *service.Data, s *httpdesign.ServiceExpr, e *httpdesig
 		)
 		name = fmt.Sprintf("New%s%s", codegen.Goify(ep.Name, true), codegen.Goify(ep.Payload, true))
 		desc = fmt.Sprintf("%s builds a %s service %s endpoint payload.",
-			name, s.Name(), e.Name())
+			name, svc.Name, e.Name())
 		isObject = design.IsObject(payload.Type)
 		if body != design.Empty {
 			ref := "body"
@@ -980,9 +981,10 @@ func buildPayloadData(svc *service.Data, s *httpdesign.ServiceExpr, e *httpdesig
 	}
 }
 
-func buildResultData(svc *service.Data, s *httpdesign.ServiceExpr, e *httpdesign.EndpointExpr, sd *ServiceData) *ResultData {
+func buildResultData(e *httpdesign.EndpointExpr, sd *ServiceData) *ResultData {
 	var (
 		result = e.MethodExpr.Result
+		svc    = sd.Service
 
 		name, ref string
 		responses []*ResponseData
@@ -1017,7 +1019,7 @@ func buildResultData(svc *service.Data, s *httpdesign.ServiceExpr, e *httpdesign
 					status := codegen.Goify(http.StatusText(v.StatusCode), true)
 					name = fmt.Sprintf("New%s%s%s", codegen.Goify(ep.Name, true), codegen.Goify(ep.Result, true), status)
 					desc = fmt.Sprintf("%s builds a %q service %q endpoint result from a HTTP %q response.",
-						name, s.Name(), e.Name(), status)
+						name, svc.Name, e.Name(), status)
 					isObject = design.IsObject(result.Type)
 					if body != design.Empty {
 						ref := "body"
@@ -1102,8 +1104,8 @@ func buildResultData(svc *service.Data, s *httpdesign.ServiceExpr, e *httpdesign
 			)
 			{
 				var (
-					serverBodyData = buildBodyType(svc, s, e, v.Body, result, false, true, sd)
-					clientBodyData = buildBodyType(svc, s, e, v.Body, result, false, false, sd)
+					serverBodyData = buildBodyType(sd, e, v.Body, result, false, true)
+					clientBodyData = buildBodyType(sd, e, v.Body, result, false, false)
 					headersData    = extractHeaders(v.MappedHeaders(), result, false, svc.Scope)
 
 					mustValidate bool
@@ -1154,7 +1156,11 @@ func buildResultData(svc *service.Data, s *httpdesign.ServiceExpr, e *httpdesign
 	}
 }
 
-func buildErrorsData(svc *service.Data, s *httpdesign.ServiceExpr, e *httpdesign.EndpointExpr, sd *ServiceData) []*ErrorData {
+func buildErrorsData(e *httpdesign.EndpointExpr, sd *ServiceData) []*ErrorData {
+	var (
+		svc = sd.Service
+	)
+
 	data := make(map[string][]*ErrorData)
 	for _, v := range e.HTTPErrors {
 		var (
@@ -1172,7 +1178,7 @@ func buildErrorsData(svc *service.Data, s *httpdesign.ServiceExpr, e *httpdesign
 				ep := svc.Method(e.MethodExpr.Name)
 				name = fmt.Sprintf("New%s%s", codegen.Goify(ep.Name, true), codegen.Goify(v.ErrorExpr.Name, true))
 				desc = fmt.Sprintf("%s builds a %s service %s endpoint %s error.",
-					name, s.Name(), e.Name(), v.ErrorExpr.Name)
+					name, svc.Name, e.Name(), v.ErrorExpr.Name)
 				if body != design.Empty {
 					isObject = design.IsObject(body)
 					ref := "body"
@@ -1252,15 +1258,15 @@ func buildErrorsData(svc *service.Data, s *httpdesign.ServiceExpr, e *httpdesign
 			)
 			{
 				att := v.ErrorExpr.AttributeExpr
-				serverBodyData = buildBodyType(svc, s, e, v.Response.Body, att, false, true, sd)
-				clientBodyData = buildBodyType(svc, s, e, v.Response.Body, att, false, false, sd)
+				serverBodyData = buildBodyType(sd, e, v.Response.Body, att, false, true)
+				clientBodyData = buildBodyType(sd, e, v.Response.Body, att, false, false)
 				if clientBodyData != nil {
 					sd.ClientTypeNames[clientBodyData.Name] = struct{}{}
 					sd.ServerTypeNames[clientBodyData.Name] = struct{}{}
 					clientBodyData.Description = fmt.Sprintf("%s is the type of the %q service %q endpoint HTTP response body for the %q error.",
-						clientBodyData.VarName, s.Name(), e.Name(), v.Name)
+						clientBodyData.VarName, svc.Name, e.Name(), v.Name)
 					serverBodyData.Description = fmt.Sprintf("%s is the type of the %q service %q endpoint HTTP response body for the %q error.",
-						serverBodyData.VarName, s.Name(), e.Name(), v.Name)
+						serverBodyData.VarName, svc.Name, e.Name(), v.Name)
 				}
 			}
 
@@ -1305,12 +1311,13 @@ func buildErrorsData(svc *service.Data, s *httpdesign.ServiceExpr, e *httpdesign
 // body (false).
 //
 // svr is true if the function is generated for server side code.
-func buildBodyType(svc *service.Data, s *httpdesign.ServiceExpr, e *httpdesign.EndpointExpr,
-	body, att *design.AttributeExpr, req, svr bool, sd *ServiceData) *TypeData {
+func buildBodyType(sd *ServiceData, e *httpdesign.EndpointExpr, body, att *design.AttributeExpr, req, svr bool) *TypeData {
 	if body.Type == design.Empty {
 		return nil
 	}
 	var (
+		svc = sd.Service
+
 		marshaled bool
 	)
 	{
@@ -1377,7 +1384,7 @@ func buildBodyType(svc *service.Data, s *httpdesign.ServiceExpr, e *httpdesign.E
 			rctx = "result"
 		}
 		desc = fmt.Sprintf("%s builds the HTTP %s body from the %s of the %q endpoint of the %q service.",
-			name, ctx, rctx, e.Name(), s.Name())
+			name, ctx, rctx, e.Name(), svc.Name)
 
 		// If design uses Body("name") syntax then need to use payload
 		// attribute to transform.
