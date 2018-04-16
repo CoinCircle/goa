@@ -72,6 +72,7 @@ type (
 		// ClientTransformHelpers is the list of transform functions
 		// required by the various client side constructors.
 		ClientTransformHelpers []*codegen.TransformFunctionData
+		ExpandedTypes          []*service.ExpandedTypeData
 	}
 
 	// EndpointData contains the data used to render the code related to a
@@ -125,6 +126,7 @@ type (
 		ResponseDecoder string
 		// MultipartRequestEncoder indicates the request encoder for multipart content type.
 		MultipartRequestEncoder *MultipartData
+		ExpandedResult          *service.ExpandedTypeData
 	}
 
 	// FileServerData lists the data needed to generate file servers.
@@ -168,6 +170,9 @@ type (
 		// Responses contains the data for the corresponding HTTP
 		// responses.
 		Responses []*ResponseData
+		// ResponseBody is true if at least one of the responses has a
+		// body.
+		ResponseBody bool
 	}
 
 	// ErrorData contains the error information required to generate the
@@ -473,6 +478,19 @@ func (svc *ServiceData) Endpoint(name string) *EndpointData {
 	return nil
 }
 
+// ResponseBodyExists returns true if at least one of the responses has a body.
+func (e *EndpointData) ResponseBodyExists() bool {
+	if e.Result != nil {
+		return true
+	}
+	for _, r := range e.Result.Responses {
+		if r.ServerBody != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // analyze creates the data necessary to render the code of the given service.
 // It records the user types needed by the service definition in userTypes.
 func (d ServicesData) analyze(hs *httpdesign.ServiceExpr) *ServiceData {
@@ -489,6 +507,23 @@ func (d ServicesData) analyze(hs *httpdesign.ServiceExpr) *ServiceData {
 		ServerTypeNames:  make(map[string]struct{}),
 		ClientTypeNames:  make(map[string]struct{}),
 	}
+
+	expTypes := make([]*service.ExpandedTypeData, 0, len(svc.ExpandedTypes))
+	for _, t := range svc.ExpandedTypes {
+		dt := design.Dup(t.Type)
+		// Add the omitempty tags for marshal/unmarshal
+		newT := &service.ExpandedTypeData{
+			Name:        t.Name,
+			VarName:     t.VarName,
+			Description: t.Description,
+			Def:         goTypeDef(svc.Scope, dt.(design.UserType).Attribute(), false, false),
+			Ref:         t.Ref,
+			Type:        t.Type,
+		}
+		newT.BuildRenderData(t.SrcType, t.Type, svc.Scope, svc.PkgName)
+		expTypes = append(expTypes, newT)
+	}
+	rd.ExpandedTypes = expTypes
 
 	for _, s := range hs.FileServers {
 		data := &FileServerData{
@@ -645,6 +680,15 @@ func (d ServicesData) analyze(hs *httpdesign.ServiceExpr) *ServiceData {
 			ResponseDecoder: fmt.Sprintf("Decode%sResponse", ep.VarName),
 		}
 
+		if ep.ExpandedResult != nil {
+			for _, t := range rd.ExpandedTypes {
+				if t.Name == ep.ExpandedResult.Name {
+					ad.ExpandedResult = t
+					break
+				}
+			}
+		}
+
 		if a.MultipartRequest {
 			ad.MultipartRequestDecoder = &MultipartData{
 				FuncName:    fmt.Sprintf("%s%sDecoderFunc", svc.StructName, ep.VarName),
@@ -677,15 +721,19 @@ func (d ServicesData) analyze(hs *httpdesign.ServiceExpr) *ServiceData {
 			}
 		})
 
-		for _, v := range a.Responses {
-			collectUserTypes(v.Body.Type, func(ut design.UserType) {
-				if d := attributeTypeData(ut, false, false, true, svc.Scope, rd); d != nil {
-					rd.ServerBodyAttributeTypes = append(rd.ServerBodyAttributeTypes, d)
+		if a.MethodExpr.Result != nil {
+			if rt, ok := a.MethodExpr.Result.Type.(*design.ResultTypeExpr); ok && len(rt.Views) <= 1 {
+				for _, v := range a.Responses {
+					collectUserTypes(v.Body.Type, func(ut design.UserType) {
+						if d := attributeTypeData(ut, false, false, true, svc.Scope, rd); d != nil {
+							rd.ServerBodyAttributeTypes = append(rd.ServerBodyAttributeTypes, d)
+						}
+						if d := attributeTypeData(ut, false, true, false, svc.Scope, rd); d != nil {
+							rd.ClientBodyAttributeTypes = append(rd.ClientBodyAttributeTypes, d)
+						}
+					})
 				}
-				if d := attributeTypeData(ut, false, true, false, svc.Scope, rd); d != nil {
-					rd.ClientBodyAttributeTypes = append(rd.ClientBodyAttributeTypes, d)
-				}
-			})
+			}
 		}
 
 		for _, v := range a.HTTPErrors {
@@ -725,7 +773,7 @@ func buildPayloadData(e *httpdesign.EndpointExpr, sd *ServiceData) *PayloadData 
 			clientBodyData = buildBodyType(sd, e, e.Body, payload, true, false)
 			paramsData     = extractPathParams(e.PathParams(), payload, svc.Scope)
 			queryData      = extractQueryParams(e.QueryParams(), payload, svc.Scope)
-			headersData    = extractHeaders(e.MappedHeaders(), payload, true, svc.Scope)
+			headersData    = extractHeaders(e.MappedHeaders(), payload, true, true, ep, svc.Scope)
 
 			mustValidate bool
 		)
@@ -985,6 +1033,7 @@ func buildResultData(e *httpdesign.EndpointExpr, sd *ServiceData) *ResultData {
 	var (
 		result = e.MethodExpr.Result
 		svc    = sd.Service
+		ep     = svc.Method(e.MethodExpr.Name)
 
 		name, ref string
 		responses []*ResponseData
@@ -1007,7 +1056,7 @@ func buildResultData(e *httpdesign.EndpointExpr, sd *ServiceData) *ResultData {
 				body = v.Body.Type
 			)
 
-			if needInit(result.Type) {
+			if needInit(result.Type) && ep.ExpandedResult == nil {
 				var (
 					name       string
 					desc       string
@@ -1015,13 +1064,12 @@ func buildResultData(e *httpdesign.EndpointExpr, sd *ServiceData) *ResultData {
 					clientArgs []*InitArgData
 				)
 				{
-					ep := svc.Method(e.MethodExpr.Name)
 					status := codegen.Goify(http.StatusText(v.StatusCode), true)
 					name = fmt.Sprintf("New%s%s%s", codegen.Goify(ep.Name, true), codegen.Goify(ep.Result, true), status)
 					desc = fmt.Sprintf("%s builds a %q service %q endpoint result from a HTTP %q response.",
 						name, svc.Name, e.Name(), status)
 					isObject = design.IsObject(result.Type)
-					if body != design.Empty {
+					if body != design.Empty && ep.ExpandedResult == nil {
 						ref := "body"
 						if design.IsObject(body) {
 							ref = "&body"
@@ -1039,7 +1087,7 @@ func buildResultData(e *httpdesign.EndpointExpr, sd *ServiceData) *ResultData {
 							Validate: vcode,
 						}}
 					}
-					for _, h := range extractHeaders(v.MappedHeaders(), result, false, svc.Scope) {
+					for _, h := range extractHeaders(v.MappedHeaders(), result, false, false, ep, svc.Scope) {
 						clientArgs = append(clientArgs, &InitArgData{
 							Name:      h.VarName,
 							Ref:       h.VarName,
@@ -1104,18 +1152,24 @@ func buildResultData(e *httpdesign.EndpointExpr, sd *ServiceData) *ResultData {
 			)
 			{
 				var (
-					serverBodyData = buildBodyType(sd, e, v.Body, result, false, true)
-					clientBodyData = buildBodyType(sd, e, v.Body, result, false, false)
-					headersData    = extractHeaders(v.MappedHeaders(), result, false, svc.Scope)
+					serverBodyData *TypeData
+					clientBodyData *TypeData
+					headersData    = extractHeaders(v.MappedHeaders(), result, false, false, ep, svc.Scope)
 
 					mustValidate bool
 				)
 				{
-					if clientBodyData != nil {
-						sd.ClientTypeNames[clientBodyData.Name] = struct{}{}
-						sd.ServerTypeNames[clientBodyData.Name] = struct{}{}
+					if t := ep.ExpandedResult; t != nil {
+						att := &design.AttributeExpr{Type: t.Type}
+						serverBodyData = buildBodyType(sd, e, att, att, false, true)
+					} else {
+						serverBodyData = buildBodyType(sd, e, v.Body, result, false, true)
+						clientBodyData = buildBodyType(sd, e, v.Body, result, false, false)
+						if clientBodyData != nil {
+							sd.ClientTypeNames[clientBodyData.Name] = struct{}{}
+							sd.ServerTypeNames[clientBodyData.Name] = struct{}{}
+						}
 					}
-
 					if !mustValidate {
 						for _, h := range headersData {
 							if h.Validate != "" || h.Required || needConversion(h.Type) {
@@ -1135,7 +1189,7 @@ func buildResultData(e *httpdesign.EndpointExpr, sd *ServiceData) *ResultData {
 					ResultInit:   init,
 					TagName:      codegen.Goify(v.Tag[0], true),
 					TagValue:     v.Tag[1],
-					TagRequired:  result.IsRequired(v.Tag[0]),
+					TagRequired:  result.IsRequired(v.Tag[0]) && ep.ExpandedResult == nil,
 					MustValidate: mustValidate,
 				}
 			}
@@ -1159,6 +1213,7 @@ func buildResultData(e *httpdesign.EndpointExpr, sd *ServiceData) *ResultData {
 func buildErrorsData(e *httpdesign.EndpointExpr, sd *ServiceData) []*ErrorData {
 	var (
 		svc = sd.Service
+		ep  = svc.Method(e.Name())
 	)
 
 	data := make(map[string][]*ErrorData)
@@ -1187,7 +1242,7 @@ func buildErrorsData(e *httpdesign.EndpointExpr, sd *ServiceData) []*ErrorData {
 					}
 					args = []*InitArgData{{Name: "body", Ref: ref, TypeRef: svc.Scope.GoTypeRef(&design.AttributeExpr{Type: body})}}
 				}
-				for _, h := range extractHeaders(v.Response.MappedHeaders(), v.ErrorExpr.AttributeExpr, false, svc.Scope) {
+				for _, h := range extractHeaders(v.Response.MappedHeaders(), v.ErrorExpr.AttributeExpr, false, false, ep, svc.Scope) {
 					args = append(args, &InitArgData{
 						Name:      h.VarName,
 						Ref:       h.VarName,
@@ -1272,7 +1327,7 @@ func buildErrorsData(e *httpdesign.EndpointExpr, sd *ServiceData) []*ErrorData {
 
 			responseData = &ResponseData{
 				StatusCode: statusCodeToHTTPConst(v.Response.StatusCode),
-				Headers:    extractHeaders(v.Response.MappedHeaders(), v.ErrorExpr.AttributeExpr, false, svc.Scope),
+				Headers:    extractHeaders(v.Response.MappedHeaders(), v.ErrorExpr.AttributeExpr, false, false, ep, svc.Scope),
 				ServerBody: serverBodyData,
 				ClientBody: clientBodyData,
 				ResultInit: init,
@@ -1521,7 +1576,7 @@ func extractQueryParams(a *design.MappedAttributeExpr, serviceType *design.Attri
 	return params
 }
 
-func extractHeaders(a *design.MappedAttributeExpr, serviceType *design.AttributeExpr, req bool, scope *codegen.NameScope) []*HeaderData {
+func extractHeaders(a *design.MappedAttributeExpr, serviceType *design.AttributeExpr, req bool, request bool, md *service.MethodData, scope *codegen.NameScope) []*HeaderData {
 	var headers []*HeaderData
 	codegen.WalkMappedAttr(a, func(name, elem string, required bool, c *design.AttributeExpr) error {
 		var (
@@ -1545,7 +1600,7 @@ func extractHeaders(a *design.MappedAttributeExpr, serviceType *design.Attribute
 			VarName:       varn,
 			TypeName:      scope.GoTypeName(c),
 			TypeRef:       typeRef,
-			Required:      required,
+			Required:      required && (!request && md.ExpandedResult == nil),
 			Pointer:       a.IsPrimitivePointer(name, req),
 			Slice:         arr != nil,
 			StringSlice:   arr != nil && arr.ElemType.Type.Kind() == design.StringKind,

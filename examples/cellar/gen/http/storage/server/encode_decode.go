@@ -23,9 +23,9 @@ import (
 // list endpoint.
 func EncodeListResponse(encoder func(context.Context, http.ResponseWriter) goahttp.Encoder) func(context.Context, http.ResponseWriter, interface{}) error {
 	return func(ctx context.Context, w http.ResponseWriter, v interface{}) error {
-		res := v.(storage.StoredBottleCollection)
+		res := v.(storage.ExpandedStoredBottleCollection)
 		enc := encoder(ctx, w)
-		body := NewListResponseBody(res)
+		body := NewExpandedStoredBottleCollection(res)
 		w.WriteHeader(http.StatusOK)
 		return enc.Encode(body)
 	}
@@ -35,9 +35,9 @@ func EncodeListResponse(encoder func(context.Context, http.ResponseWriter) goaht
 // show endpoint.
 func EncodeShowResponse(encoder func(context.Context, http.ResponseWriter) goahttp.Encoder) func(context.Context, http.ResponseWriter, interface{}) error {
 	return func(ctx context.Context, w http.ResponseWriter, v interface{}) error {
-		res := v.(*storage.StoredBottle)
+		res := v.(*storage.ExpandedStoredBottle)
 		enc := encoder(ctx, w)
-		body := NewShowResponseBody(res)
+		body := NewExpandedStoredBottle(res)
 		w.WriteHeader(http.StatusOK)
 		return enc.Encode(body)
 	}
@@ -282,27 +282,18 @@ func NewStorageMultiUpdateDecoder(mux goahttp.Muxer, storageMultiUpdateDecoderFn
 	}
 }
 
-// marshalWineryToWineryResponseBody builds a value of type *WineryResponseBody
-// from a value of type *storage.Winery.
-func marshalWineryToWineryResponseBody(v *storage.Winery) *WineryResponseBody {
-	res := &WineryResponseBody{
-		Name:    v.Name,
-		Region:  v.Region,
-		Country: v.Country,
-		URL:     v.URL,
+// marshalExpandedWineryToExpandedWinery builds a value of type *ExpandedWinery
+// from a value of type *storage.ExpandedWinery.
+func marshalExpandedWineryToExpandedWinery(v *storage.ExpandedWinery) *ExpandedWinery {
+	if v == nil {
+		return nil
 	}
-
-	return res
-}
-
-// marshalWineryToWinery builds a value of type *Winery from a value of type
-// *storage.Winery.
-func marshalWineryToWinery(v *storage.Winery) *Winery {
-	res := &Winery{
+	res := &ExpandedWinery{
 		Name:    v.Name,
 		Region:  v.Region,
 		Country: v.Country,
 		URL:     v.URL,
+		View:    v.View,
 	}
 
 	return res

@@ -22,9 +22,9 @@ import (
 // sommelier pick endpoint.
 func EncodePickResponse(encoder func(context.Context, http.ResponseWriter) goahttp.Encoder) func(context.Context, http.ResponseWriter, interface{}) error {
 	return func(ctx context.Context, w http.ResponseWriter, v interface{}) error {
-		res := v.(sommelier.StoredBottleCollection)
+		res := v.(sommelier.ExpandedStoredBottleCollection)
 		enc := encoder(ctx, w)
-		body := NewPickResponseBody(res)
+		body := NewExpandedStoredBottleCollection(res)
 		w.WriteHeader(http.StatusOK)
 		return enc.Encode(body)
 	}
@@ -78,14 +78,18 @@ func EncodePickError(encoder func(context.Context, http.ResponseWriter) goahttp.
 	}
 }
 
-// marshalWineryToWineryResponseBody builds a value of type *WineryResponseBody
-// from a value of type *sommelier.Winery.
-func marshalWineryToWineryResponseBody(v *sommelier.Winery) *WineryResponseBody {
-	res := &WineryResponseBody{
+// marshalExpandedWineryToExpandedWinery builds a value of type *ExpandedWinery
+// from a value of type *sommelier.ExpandedWinery.
+func marshalExpandedWineryToExpandedWinery(v *sommelier.ExpandedWinery) *ExpandedWinery {
+	if v == nil {
+		return nil
+	}
+	res := &ExpandedWinery{
 		Name:    v.Name,
 		Region:  v.Region,
 		Country: v.Country,
 		URL:     v.URL,
+		View:    v.View,
 	}
 
 	return res

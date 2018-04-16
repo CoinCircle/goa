@@ -137,6 +137,15 @@ func clientType(genpkg string, svc *httpdesign.ServiceExpr, seen map[string]stru
 		}
 	}
 
+	// expanded types
+	for _, t := range rdata.ExpandedTypes {
+		sections = append(sections, &codegen.SectionTemplate{
+			Name:   "expanded-type",
+			Source: typeDeclT,
+			Data:   t,
+		})
+	}
+
 	// body constructors
 	for _, init := range initData {
 		sections = append(sections, &codegen.SectionTemplate{
@@ -170,12 +179,34 @@ func clientType(genpkg string, svc *httpdesign.ServiceExpr, seen map[string]stru
 		}
 	}
 
+	for _, t := range rdata.ExpandedTypes {
+		sections = append(sections, &codegen.SectionTemplate{
+			Name:   "expanded-type-convert",
+			Source: expandedTypeConvertT,
+			Data:   t,
+		})
+	}
+	for _, h := range rdata.Service.Helpers {
+		sections = append(sections, &codegen.SectionTemplate{
+			Name:   "transform-helper",
+			Source: transformHelperT,
+			Data:   h,
+		})
+	}
+
 	// validate methods
 	for _, data := range validatedTypes {
 		sections = append(sections, &codegen.SectionTemplate{
 			Name:   "client-validate",
 			Source: validateT,
 			Data:   data,
+		})
+	}
+	for _, t := range rdata.Service.ExpandedTypes {
+		sections = append(sections, &codegen.SectionTemplate{
+			Name:   "client-validate-expanded",
+			Source: validateExpandedTypeT,
+			Data:   t,
 		})
 	}
 
@@ -220,4 +251,22 @@ func {{ .Name }}({{- range .ClientArgs }}{{ .Name }} {{ .TypeRef }}, {{ end }}) 
 		{{- end }}
 	{{ end -}}
 }
+`
+
+// input: ExpandedTypeData
+const validateExpandedTypeT = `{{ printf "Validate runs the validations defined on %s." .VarName | comment }}
+func (e {{ .Ref }}) Validate() (err error) {
+  {{ .Validate }}
+  return
+}
+`
+
+// input: ExpandedTypeData
+const expandedTypeConvertT = `{{- range .Views }}
+{{ printf "%s converts %s type to %s result type using the %s view." .ToResult $.Name $.ResultName .View | comment }}
+func (e {{ .Ref }}) {{ .ToResult }}() {{ $.ResultRef }} {
+  {{ .ToResultCode }}
+  return res
+}
+{{ end }}
 `

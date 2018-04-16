@@ -8,12 +8,20 @@
 
 package sommelier
 
-import "context"
+import (
+	"context"
+	"unicode/utf8"
+
+	"goa.design/goa"
+)
 
 // The sommelier service retrieves bottles given a set of criteria.
 type Service interface {
 	// Pick implements pick.
-	Pick(context.Context, *Criteria) (StoredBottleCollection, error)
+	// It must return one of the following views
+	// * default
+	// * tiny
+	Pick(context.Context, *Criteria) (StoredBottleCollection, string, error)
 }
 
 // ServiceName is the name of the service as defined in the design. This is the
@@ -76,6 +84,47 @@ type Component struct {
 	Percentage *uint32
 }
 
+type ExpandedStoredBottleCollection []*ExpandedStoredBottle
+
+type ExpandedStoredBottle struct {
+	// ID is the unique id of the bottle.
+	ID *string
+	// Name of bottle
+	Name *string
+	// Winery that produces wine
+	Winery *ExpandedWinery
+	// Vintage of bottle
+	Vintage *uint32
+	// Composition is the list of grape varietals and associated percentage.
+	Composition []*ExpandedComponent
+	// Description of bottle
+	Description *string
+	// Rating of bottle from 1 (worst) to 5 (best)
+	Rating *uint32
+	// View to render.
+	View string
+}
+
+type ExpandedWinery struct {
+	// Name of winery
+	Name *string
+	// Region of winery
+	Region *string
+	// Country of winery
+	Country *string
+	// Winery website URL
+	URL *string
+	// View to render.
+	View string
+}
+
+type ExpandedComponent struct {
+	// Grape varietal
+	Varietal *string
+	// Percentage of varietal in wine
+	Percentage *uint32
+}
+
 // Missing criteria
 type NoCriteria string
 
@@ -100,4 +149,347 @@ func (e NoMatch) Error() string {
 // ErrorName returns "no_match".
 func (e NoMatch) ErrorName() string {
 	return "no_match"
+}
+
+// newExpandedStoredBottleCollectionDefault converts StoredBottleCollection
+// result type to ExpandedStoredBottleCollection type using the default view.
+func newExpandedStoredBottleCollectionDefault(res StoredBottleCollection) ExpandedStoredBottleCollection {
+	e := make([]*ExpandedStoredBottle, len(res))
+	for i, val := range res {
+		c := &ExpandedStoredBottle{
+			ID:          &val.ID,
+			Name:        &val.Name,
+			Vintage:     &val.Vintage,
+			Description: val.Description,
+			Rating:      val.Rating,
+		}
+		if val.Composition != nil {
+			c.Composition = make([]*ExpandedComponent, len(val.Composition))
+			for j, val := range val.Composition {
+				c.Composition[j] = &ExpandedComponent{
+					Varietal:   &val.Varietal,
+					Percentage: val.Percentage,
+				}
+			}
+		}
+		if val.Winery != nil {
+			c.Winery = newExpandedWineryDefault(val.Winery)
+		}
+
+		c.View = "default"
+		e[i] = c
+	}
+
+	return e
+}
+
+// newExpandedStoredBottleCollectionTiny converts StoredBottleCollection result
+// type to ExpandedStoredBottleCollection type using the tiny view.
+func newExpandedStoredBottleCollectionTiny(res StoredBottleCollection) ExpandedStoredBottleCollection {
+	e := make([]*ExpandedStoredBottle, len(res))
+	for i, val := range res {
+		c := &ExpandedStoredBottle{
+			ID:   &val.ID,
+			Name: &val.Name,
+		}
+		if val.Winery != nil {
+			c.Winery = newExpandedWineryTiny(val.Winery)
+		}
+
+		c.View = "tiny"
+		e[i] = c
+	}
+
+	return e
+}
+
+// newExpandedStoredBottleDefault converts StoredBottle result type to
+// ExpandedStoredBottle type using the default view.
+func newExpandedStoredBottleDefault(res *StoredBottle) *ExpandedStoredBottle {
+	e := &ExpandedStoredBottle{
+		ID:          &res.ID,
+		Name:        &res.Name,
+		Vintage:     &res.Vintage,
+		Description: res.Description,
+		Rating:      res.Rating,
+	}
+	if res.Composition != nil {
+		e.Composition = make([]*ExpandedComponent, len(res.Composition))
+		for j, val := range res.Composition {
+			e.Composition[j] = &ExpandedComponent{
+				Varietal:   &val.Varietal,
+				Percentage: val.Percentage,
+			}
+		}
+	}
+	if res.Winery != nil {
+		e.Winery = newExpandedWineryDefault(res.Winery)
+	}
+
+	e.View = "default"
+	return e
+}
+
+// newExpandedStoredBottleTiny converts StoredBottle result type to
+// ExpandedStoredBottle type using the tiny view.
+func newExpandedStoredBottleTiny(res *StoredBottle) *ExpandedStoredBottle {
+	e := &ExpandedStoredBottle{
+		ID:   &res.ID,
+		Name: &res.Name,
+	}
+	if res.Winery != nil {
+		e.Winery = newExpandedWineryTiny(res.Winery)
+	}
+
+	e.View = "tiny"
+	return e
+}
+
+// newExpandedWineryDefault converts Winery result type to ExpandedWinery type
+// using the default view.
+func newExpandedWineryDefault(res *Winery) *ExpandedWinery {
+	e := &ExpandedWinery{
+		Name:    &res.Name,
+		Region:  &res.Region,
+		Country: &res.Country,
+		URL:     res.URL,
+	}
+	e.View = "default"
+	return e
+}
+
+// newExpandedWineryTiny converts Winery result type to ExpandedWinery type
+// using the tiny view.
+func newExpandedWineryTiny(res *Winery) *ExpandedWinery {
+	e := &ExpandedWinery{
+		Name: &res.Name,
+	}
+	e.View = "tiny"
+	return e
+}
+
+// Validate runs the validations defined on ExpandedStoredBottleCollection.
+func (e ExpandedStoredBottleCollection) Validate() (err error) {
+
+	for _, c := range e {
+		switch c.View {
+		case "default":
+			if c.ID == nil {
+				err = goa.MergeErrors(err, goa.MissingFieldError("id", "c"))
+			}
+			if c.Name == nil {
+				err = goa.MergeErrors(err, goa.MissingFieldError("name", "c"))
+			}
+			if c.Winery == nil {
+				err = goa.MergeErrors(err, goa.MissingFieldError("winery", "c"))
+			}
+			if c.Vintage == nil {
+				err = goa.MergeErrors(err, goa.MissingFieldError("vintage", "c"))
+			}
+			if c.Name != nil {
+				if utf8.RuneCountInString(*c.Name) > 100 {
+					err = goa.MergeErrors(err, goa.InvalidLengthError("c.name", *c.Name, utf8.RuneCountInString(*c.Name), 100, false))
+				}
+			}
+			if c.Vintage != nil {
+				if *c.Vintage < 1900 {
+					err = goa.MergeErrors(err, goa.InvalidRangeError("c.vintage", *c.Vintage, 1900, true))
+				}
+			}
+			if c.Vintage != nil {
+				if *c.Vintage > 2020 {
+					err = goa.MergeErrors(err, goa.InvalidRangeError("c.vintage", *c.Vintage, 2020, false))
+				}
+			}
+			for _, e := range c.Composition {
+				if e != nil {
+					if err2 := e.Validate(); err2 != nil {
+						err = goa.MergeErrors(err, err2)
+					}
+				}
+			}
+			if c.Description != nil {
+				if utf8.RuneCountInString(*c.Description) > 2000 {
+					err = goa.MergeErrors(err, goa.InvalidLengthError("c.description", *c.Description, utf8.RuneCountInString(*c.Description), 2000, false))
+				}
+			}
+			if c.Rating != nil {
+				if *c.Rating < 1 {
+					err = goa.MergeErrors(err, goa.InvalidRangeError("c.rating", *c.Rating, 1, true))
+				}
+			}
+			if c.Rating != nil {
+				if *c.Rating > 5 {
+					err = goa.MergeErrors(err, goa.InvalidRangeError("c.rating", *c.Rating, 5, false))
+				}
+			}
+			if c.Winery != nil {
+				if err2 := c.Winery.Validate(); err2 != nil {
+					err = goa.MergeErrors(err, err2)
+				}
+			}
+		case "tiny":
+			if c.ID == nil {
+				err = goa.MergeErrors(err, goa.MissingFieldError("id", "c"))
+			}
+			if c.Name == nil {
+				err = goa.MergeErrors(err, goa.MissingFieldError("name", "c"))
+			}
+			if c.Winery == nil {
+				err = goa.MergeErrors(err, goa.MissingFieldError("winery", "c"))
+			}
+			if c.Name != nil {
+				if utf8.RuneCountInString(*c.Name) > 100 {
+					err = goa.MergeErrors(err, goa.InvalidLengthError("c.name", *c.Name, utf8.RuneCountInString(*c.Name), 100, false))
+				}
+			}
+			if c.Winery != nil {
+				if err2 := c.Winery.Validate(); err2 != nil {
+					err = goa.MergeErrors(err, err2)
+				}
+			}
+		}
+	}
+
+	return
+}
+
+// Validate runs the validations defined on ExpandedStoredBottle.
+func (e *ExpandedStoredBottle) Validate() (err error) {
+	switch e.View {
+	case "default":
+		if e.ID == nil {
+			err = goa.MergeErrors(err, goa.MissingFieldError("id", "e"))
+		}
+		if e.Name == nil {
+			err = goa.MergeErrors(err, goa.MissingFieldError("name", "e"))
+		}
+		if e.Winery == nil {
+			err = goa.MergeErrors(err, goa.MissingFieldError("winery", "e"))
+		}
+		if e.Vintage == nil {
+			err = goa.MergeErrors(err, goa.MissingFieldError("vintage", "e"))
+		}
+		if e.Name != nil {
+			if utf8.RuneCountInString(*e.Name) > 100 {
+				err = goa.MergeErrors(err, goa.InvalidLengthError("e.name", *e.Name, utf8.RuneCountInString(*e.Name), 100, false))
+			}
+		}
+		if e.Vintage != nil {
+			if *e.Vintage < 1900 {
+				err = goa.MergeErrors(err, goa.InvalidRangeError("e.vintage", *e.Vintage, 1900, true))
+			}
+		}
+		if e.Vintage != nil {
+			if *e.Vintage > 2020 {
+				err = goa.MergeErrors(err, goa.InvalidRangeError("e.vintage", *e.Vintage, 2020, false))
+			}
+		}
+		for _, e := range e.Composition {
+			if e != nil {
+				if err2 := e.Validate(); err2 != nil {
+					err = goa.MergeErrors(err, err2)
+				}
+			}
+		}
+		if e.Description != nil {
+			if utf8.RuneCountInString(*e.Description) > 2000 {
+				err = goa.MergeErrors(err, goa.InvalidLengthError("e.description", *e.Description, utf8.RuneCountInString(*e.Description), 2000, false))
+			}
+		}
+		if e.Rating != nil {
+			if *e.Rating < 1 {
+				err = goa.MergeErrors(err, goa.InvalidRangeError("e.rating", *e.Rating, 1, true))
+			}
+		}
+		if e.Rating != nil {
+			if *e.Rating > 5 {
+				err = goa.MergeErrors(err, goa.InvalidRangeError("e.rating", *e.Rating, 5, false))
+			}
+		}
+		if e.Winery != nil {
+			if err2 := e.Winery.Validate(); err2 != nil {
+				err = goa.MergeErrors(err, err2)
+			}
+		}
+	case "tiny":
+		if e.ID == nil {
+			err = goa.MergeErrors(err, goa.MissingFieldError("id", "e"))
+		}
+		if e.Name == nil {
+			err = goa.MergeErrors(err, goa.MissingFieldError("name", "e"))
+		}
+		if e.Winery == nil {
+			err = goa.MergeErrors(err, goa.MissingFieldError("winery", "e"))
+		}
+		if e.Name != nil {
+			if utf8.RuneCountInString(*e.Name) > 100 {
+				err = goa.MergeErrors(err, goa.InvalidLengthError("e.name", *e.Name, utf8.RuneCountInString(*e.Name), 100, false))
+			}
+		}
+		if e.Winery != nil {
+			if err2 := e.Winery.Validate(); err2 != nil {
+				err = goa.MergeErrors(err, err2)
+			}
+		}
+	}
+
+	return
+}
+
+// Validate runs the validations defined on ExpandedWinery.
+func (e *ExpandedWinery) Validate() (err error) {
+	switch e.View {
+	case "default":
+		if e.Name == nil {
+			err = goa.MergeErrors(err, goa.MissingFieldError("name", "e"))
+		}
+		if e.Region == nil {
+			err = goa.MergeErrors(err, goa.MissingFieldError("region", "e"))
+		}
+		if e.Country == nil {
+			err = goa.MergeErrors(err, goa.MissingFieldError("country", "e"))
+		}
+		if e.Region != nil {
+			err = goa.MergeErrors(err, goa.ValidatePattern("e.region", *e.Region, "(?i)[a-z '\\.]+"))
+		}
+		if e.Country != nil {
+			err = goa.MergeErrors(err, goa.ValidatePattern("e.country", *e.Country, "(?i)[a-z '\\.]+"))
+		}
+		if e.URL != nil {
+			err = goa.MergeErrors(err, goa.ValidatePattern("e.url", *e.URL, "(?i)^(https?|ftp)://[^\\s/$.?#].[^\\s]*$"))
+		}
+	case "tiny":
+		if e.Name == nil {
+			err = goa.MergeErrors(err, goa.MissingFieldError("name", "e"))
+		}
+	}
+
+	return
+}
+
+// Validate runs the validations defined on ExpandedComponent.
+func (e *ExpandedComponent) Validate() (err error) {
+	if e.Varietal == nil {
+		err = goa.MergeErrors(err, goa.MissingFieldError("varietal", "e"))
+	}
+	if e.Varietal != nil {
+		err = goa.MergeErrors(err, goa.ValidatePattern("e.varietal", *e.Varietal, "[A-Za-z' ]+"))
+	}
+	if e.Varietal != nil {
+		if utf8.RuneCountInString(*e.Varietal) > 100 {
+			err = goa.MergeErrors(err, goa.InvalidLengthError("e.varietal", *e.Varietal, utf8.RuneCountInString(*e.Varietal), 100, false))
+		}
+	}
+	if e.Percentage != nil {
+		if *e.Percentage < 1 {
+			err = goa.MergeErrors(err, goa.InvalidRangeError("e.percentage", *e.Percentage, 1, true))
+		}
+	}
+	if e.Percentage != nil {
+		if *e.Percentage > 100 {
+			err = goa.MergeErrors(err, goa.InvalidRangeError("e.percentage", *e.Percentage, 100, false))
+		}
+	}
+	return
 }

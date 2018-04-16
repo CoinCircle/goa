@@ -75,6 +75,7 @@ func clientEncodeDecode(genpkg string, svc *httpdesign.ServiceExpr) *codegen.Fil
 		codegen.Header(title, "client", []*codegen.ImportSpec{
 			{Path: "bytes"},
 			{Path: "context"},
+			{Path: "fmt"},
 			{Path: "io"},
 			{Path: "io/ioutil"},
 			{Path: "mime/multipart"},
@@ -363,6 +364,8 @@ func {{ .ResponseDecoder }}(decoder func(*http.Response) goahttp.Decoder, restor
 			return {{ .ResultInit.Name }}({{ range .ResultInit.ClientArgs }}{{ .Ref }},{{ end }}), nil
 		{{- else if .ClientBody }}
 			return body, nil
+		{{- else if $.Method.ExpandedResult }}
+			return res, nil
 		{{- else }}
 			return nil, nil
 		{{- end }}
@@ -389,19 +392,47 @@ func {{ .ResponseDecoder }}(decoder func(*http.Response) goahttp.Decoder, restor
 
 const singleResponseT = `case {{ .StatusCode }}:
 	{{- if .ClientBody }}
-			var (
-				body {{ .ClientBody.VarName }}
-				err error
-			)
-			err = decoder(resp).Decode(&body)
-			if err != nil {
-				return nil, goahttp.ErrDecodingError("{{ $.ServiceName }}", "{{ $.Method.Name }}", err)
-			}
+		var (
+			body {{ .ClientBody.VarName }}
+			err error
+		)
+		err = decoder(resp).Decode(&body)
+		if err != nil {
+			return nil, goahttp.ErrDecodingError("{{ $.ServiceName }}", "{{ $.Method.Name }}", err)
+		}
 		{{- if .ClientBody.ValidateRef }}
 			{{ .ClientBody.ValidateRef }}
-			if err != nil {
-				return nil, goahttp.ErrValidationError("{{ $.ServiceName }}", "{{ $.Method.Name }}", err)
-			}
+		if err != nil {
+			return nil, fmt.Errorf("invalid response: %s", err)
+		}
+		{{- end }}
+	{{- else if $.ExpandedResult }}
+		var (
+			eRes {{ $.ExpandedResult.Ref }}
+			res {{ $.Result.Ref }}
+			err error
+		)
+		err = decoder(resp).Decode(&eRes)
+		if err != nil {
+			return nil, goahttp.ErrDecodingError("{{ $.ServiceName }}", "{{ $.Method.Name }}", err)
+		}
+		err = eRes.Validate()
+		if err != nil {
+			return nil, fmt.Errorf("invalid response: %s", err)
+		}
+		{{- if $.Method.ExpandedResult.IsCollection }}
+		if len(eRes) == 0 {
+			res = eRes.toDefault()
+		} else {
+		{{- end }}
+		switch eRes{{ if $.Method.ExpandedResult.IsCollection }}[0]{{ end }}.View {
+		{{- range $.Method.ExpandedResult.Views }}
+		case {{ printf "%q" .View }}:
+			res = eRes.{{ .ToResult }}()
+		{{- end }}
+		}
+		{{- if $.Method.ExpandedResult.IsCollection }}
+		}
 		{{- end }}
 	{{ end }}
 
@@ -489,6 +520,9 @@ const singleResponseT = `case {{ .StatusCode }}:
 		{{- end }}
 		{{- if .Validate }}
 			{{ .Validate }}
+		{{- end }}
+		{{- if $.Method.ExpandedResult }}
+		res.{{ .FieldName }} = {{ .VarName }}
 		{{- end }}
 		{{- end }}{{/* range .Headers */}}
 	{{- end }}

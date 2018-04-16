@@ -31,10 +31,7 @@ type (
 
 	// EndpointMethodData describes a single endpoint method.
 	EndpointMethodData struct {
-		// Name is the method name.
-		Name string
-		// VarName is the name of the corresponding generated function.
-		VarName string
+		*MethodData
 		// ArgName is the name of the argument used to initialize the client
 		// struct method field.
 		ArgName string
@@ -44,12 +41,6 @@ type (
 		ServiceName string
 		// ServiceVarName is the name of the owner service Go interface.
 		ServiceVarName string
-		// PayloadRef is reference to the payload Go type if any.
-		PayloadRef string
-		// ResultRef is reference to the result Go type if any.
-		ResultRef string
-		// Errors list the possible errors defined in the design if any.
-		Errors []*ErrorInitData
 	}
 )
 
@@ -74,6 +65,7 @@ func EndpointFile(service *design.ServiceExpr) *codegen.File {
 		header := codegen.Header(service.Name+" endpoints", svc.PkgName,
 			[]*codegen.ImportSpec{
 				&codegen.ImportSpec{Path: "context"},
+				&codegen.ImportSpec{Path: "fmt"},
 				&codegen.ImportSpec{Name: "goa", Path: "goa.design/goa"},
 			})
 		def := &codegen.SectionTemplate{
@@ -109,15 +101,11 @@ func endpointData(service *design.ServiceExpr) *EndpointsData {
 	methods := make([]*EndpointMethodData, len(svc.Methods))
 	for i, m := range svc.Methods {
 		methods[i] = &EndpointMethodData{
-			Name:           m.Name,
-			VarName:        m.VarName,
+			MethodData:     m,
 			ArgName:        codegen.Goify(m.VarName, false),
 			ServiceName:    svc.Name,
 			ServiceVarName: ServiceInterfaceName,
 			ClientVarName:  ClientStructName,
-			PayloadRef:     m.PayloadRef,
-			ResultRef:      m.ResultRef,
-			Errors:         m.Errors,
 		}
 	}
 	desc := fmt.Sprintf("%s wraps the %q service endpoints.", EndpointsStructName, service.Name)
@@ -163,7 +151,25 @@ func New{{ .VarName }}Endpoint(s {{ .ServiceVarName}}) goa.Endpoint {
 {{- if .PayloadRef }}
 		p := req.({{ .PayloadRef }})
 {{- end }}
-{{- if .ResultRef }}
+{{- if .ExpandedResult }}
+		res, view, err := s.{{ .VarName }}(ctx{{ if .PayloadRef }}, p{{ end }})
+		if err != nil {
+			return nil, err
+		}
+		var r {{ .ExpandedResult.Ref }}
+		switch view {
+			{{- range .ExpandedResult.Views }}
+		case {{ printf "%q" .View }}:
+			r = {{ .FromResult }}(res)
+			{{- end }}
+		default:
+			return nil, fmt.Errorf("unknown view %s", view)
+		}
+		if err := r.Validate(); err != nil {
+			return nil, err
+		}
+		return r, nil
+{{- else if .ResultRef }}
 		return s.{{ .VarName }}(ctx{{ if .PayloadRef }}, p{{ end }})
 {{- else }}
 		return nil, s.{{ .VarName }}(ctx{{ if .PayloadRef }}, p{{ end }})

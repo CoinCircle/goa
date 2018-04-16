@@ -11,6 +11,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -74,19 +75,30 @@ func DecodePickResponse(decoder func(*http.Response) goahttp.Decoder, restoreBod
 		switch resp.StatusCode {
 		case http.StatusOK:
 			var (
-				body PickResponseBody
+				eRes ExpandedStoredBottleCollection
+				res  sommelier.StoredBottleCollection
 				err  error
 			)
-			err = decoder(resp).Decode(&body)
+			err = decoder(resp).Decode(&eRes)
 			if err != nil {
 				return nil, goahttp.ErrDecodingError("sommelier", "pick", err)
 			}
-			err = body.Validate()
+			err = eRes.Validate()
 			if err != nil {
-				return nil, goahttp.ErrValidationError("sommelier", "pick", err)
+				return nil, fmt.Errorf("invalid response: %s", err)
+			}
+			if len(eRes) == 0 {
+				res = eRes.toDefault()
+			} else {
+				switch eRes[0].View {
+				case "default":
+					res = eRes.toDefault()
+				case "tiny":
+					res = eRes.toTiny()
+				}
 			}
 
-			return NewPickStoredBottleCollectionOK(body), nil
+			return res, nil
 		case http.StatusBadRequest:
 			var (
 				body PickNoCriteriaResponseBody
@@ -96,7 +108,6 @@ func DecodePickResponse(decoder func(*http.Response) goahttp.Decoder, restoreBod
 			if err != nil {
 				return nil, goahttp.ErrDecodingError("sommelier", "pick", err)
 			}
-
 			return nil, NewPickNoCriteria(body)
 		case http.StatusNotFound:
 			var (
@@ -107,24 +118,10 @@ func DecodePickResponse(decoder func(*http.Response) goahttp.Decoder, restoreBod
 			if err != nil {
 				return nil, goahttp.ErrDecodingError("sommelier", "pick", err)
 			}
-
 			return nil, NewPickNoMatch(body)
 		default:
 			body, _ := ioutil.ReadAll(resp.Body)
 			return nil, goahttp.ErrInvalidResponse("account", "create", resp.StatusCode, string(body))
 		}
 	}
-}
-
-// unmarshalWineryResponseBodyToWinery builds a value of type *sommelier.Winery
-// from a value of type *WineryResponseBody.
-func unmarshalWineryResponseBodyToWinery(v *WineryResponseBody) *sommelier.Winery {
-	res := &sommelier.Winery{
-		Name:    *v.Name,
-		Region:  *v.Region,
-		Country: *v.Country,
-		URL:     v.URL,
-	}
-
-	return res
 }

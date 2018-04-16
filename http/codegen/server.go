@@ -872,9 +872,12 @@ const responseEncoderT = `{{ printf "%s returns an encoder for responses returne
 func {{ .ResponseEncoder }}(encoder func(context.Context, http.ResponseWriter) goahttp.Encoder) func(context.Context, http.ResponseWriter, interface{}) error {
 	return func(ctx context.Context, w http.ResponseWriter, v interface{}) error {
 
-	{{- if .Result.Ref }}
+	{{- if and .Result.Ref .ResponseBodyExists }}
+		{{- if .ExpandedResult }}
+		res := v.({{ .ExpandedResult.FullRef }})
+		{{- else }}
 		res := v.({{ .Result.Ref }})
-
+		{{- end }}
 		{{- range .Result.Responses }}
 
 			{{- if .TagName }}

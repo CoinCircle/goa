@@ -10,6 +10,7 @@ package sommelier
 
 import (
 	"context"
+	"fmt"
 
 	goa "goa.design/goa"
 )
@@ -36,6 +37,22 @@ func (e *Endpoints) Use(m func(goa.Endpoint) goa.Endpoint) {
 func NewPickEndpoint(s Service) goa.Endpoint {
 	return func(ctx context.Context, req interface{}) (interface{}, error) {
 		p := req.(*Criteria)
-		return s.Pick(ctx, p)
+		res, view, err := s.Pick(ctx, p)
+		if err != nil {
+			return nil, err
+		}
+		var r ExpandedStoredBottleCollection
+		switch view {
+		case "default":
+			r = newExpandedStoredBottleCollectionDefault(res)
+		case "tiny":
+			r = newExpandedStoredBottleCollectionTiny(res)
+		default:
+			return nil, fmt.Errorf("unknown view %s", view)
+		}
+		if err := r.Validate(); err != nil {
+			return nil, err
+		}
+		return r, nil
 	}
 }

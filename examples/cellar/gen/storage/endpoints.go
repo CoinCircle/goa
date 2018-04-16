@@ -10,6 +10,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 
 	goa "goa.design/goa"
 )
@@ -53,7 +54,23 @@ func (e *Endpoints) Use(m func(goa.Endpoint) goa.Endpoint) {
 // service "storage".
 func NewListEndpoint(s Service) goa.Endpoint {
 	return func(ctx context.Context, req interface{}) (interface{}, error) {
-		return s.List(ctx)
+		res, view, err := s.List(ctx)
+		if err != nil {
+			return nil, err
+		}
+		var r ExpandedStoredBottleCollection
+		switch view {
+		case "default":
+			r = newExpandedStoredBottleCollectionDefault(res)
+		case "tiny":
+			r = newExpandedStoredBottleCollectionTiny(res)
+		default:
+			return nil, fmt.Errorf("unknown view %s", view)
+		}
+		if err := r.Validate(); err != nil {
+			return nil, err
+		}
+		return r, nil
 	}
 }
 
@@ -62,7 +79,23 @@ func NewListEndpoint(s Service) goa.Endpoint {
 func NewShowEndpoint(s Service) goa.Endpoint {
 	return func(ctx context.Context, req interface{}) (interface{}, error) {
 		p := req.(*ShowPayload)
-		return s.Show(ctx, p)
+		res, view, err := s.Show(ctx, p)
+		if err != nil {
+			return nil, err
+		}
+		var r *ExpandedStoredBottle
+		switch view {
+		case "default":
+			r = newExpandedStoredBottleDefault(res)
+		case "tiny":
+			r = newExpandedStoredBottleTiny(res)
+		default:
+			return nil, fmt.Errorf("unknown view %s", view)
+		}
+		if err := r.Validate(); err != nil {
+			return nil, err
+		}
+		return r, nil
 	}
 }
 

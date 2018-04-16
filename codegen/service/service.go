@@ -17,6 +17,7 @@ func File(service *design.ServiceExpr) *codegen.File {
 		svc.PkgName,
 		[]*codegen.ImportSpec{
 			{Path: "context"},
+			{Path: "unicode/utf8"},
 			{Path: "goa.design/goa"},
 		})
 	def := &codegen.SectionTemplate{Name: "service", Source: serviceT, Data: svc}
@@ -57,6 +58,14 @@ func File(service *design.ServiceExpr) *codegen.File {
 		}
 	}
 
+	for _, t := range svc.ExpandedTypes {
+		sections = append(sections, &codegen.SectionTemplate{
+			Name:   "expanded-type",
+			Source: userTypeT,
+			Data:   t,
+		})
+	}
+
 	var errorTypes []*UserTypeData
 	for _, et := range svc.ErrorTypes {
 		if et.Type == design.ErrorResult {
@@ -90,6 +99,28 @@ func File(service *design.ServiceExpr) *codegen.File {
 			Data:   er,
 		})
 	}
+
+	for _, t := range svc.ExpandedTypes {
+		sections = append(sections, &codegen.SectionTemplate{
+			Name:   "expanded-type-init",
+			Source: expandedTypeInitT,
+			Data:   t,
+		})
+	}
+	for _, t := range svc.ExpandedTypes {
+		sections = append(sections, &codegen.SectionTemplate{
+			Name:   "expanded-type-validate",
+			Source: validateT,
+			Data:   t,
+		})
+	}
+	for _, h := range svc.Helpers {
+		sections = append(sections, &codegen.SectionTemplate{
+			Name:   "transform-helper",
+			Source: transformHelperT,
+			Data:   h,
+		})
+	}
 	return &codegen.File{Path: path, SectionTemplates: sections}
 }
 
@@ -111,7 +142,17 @@ const serviceT = `
 type Service interface {
 {{- range .Methods }}
 	{{ comment .Description }}
-	{{ .VarName }}(context.Context{{ if .Payload }}, {{ .PayloadRef }}{{ end }}) {{ if .Result }}({{ .ResultRef }}, error){{ else }}error{{ end }}
+	{{- if .ExpandedResult }}
+		{{ comment "It must return one of the following views" }}
+		{{- range .ExpandedResult.Views }}
+			{{- if .Description }}
+			{{ printf "* %s: %s" .View .Description | comment }}
+			{{- else }}
+			{{ printf "* %s" .View | comment }}
+			{{- end }}
+		{{- end }}
+	{{- end }}
+	{{ .VarName }}(context.Context{{ if .Payload }}, {{ .PayloadRef }}{{ end }}) {{ if .Result }}({{ .ResultRef }}, {{ if .ExpandedResult }}string, {{ end }}error){{ else }}error{{ end }}
 {{- end }}
 }
 
@@ -164,4 +205,22 @@ func {{ .Name }}(err error) {{ .TypeRef }} {
 	{{- end }}
 	}
 }
+`
+
+// input: ExpandedTypeData
+const validateT = `{{ printf "Validate runs the validations defined on %s." .VarName | comment }}
+func (e {{ .Ref }}) Validate() (err error) {
+	{{ .Validate }}
+	return
+}
+`
+
+// input: ExpandedTypeData
+const expandedTypeInitT = `{{- range .Views }}
+{{ printf "%s converts %s result type to %s type using the %s view." .FromResult $.ResultName $.Name .View | comment }}
+func {{ .FromResult }}(res {{ $.ResultRef }}) {{ $.Ref }} {
+	{{ .FromResultCode }}
+	return e
+}
+{{ end }}
 `
